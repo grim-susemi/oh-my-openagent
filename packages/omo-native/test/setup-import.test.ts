@@ -3,15 +3,18 @@ import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import {
   chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync,
-  rmSync, statSync, writeFileSync,
+  statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { teardownRoots, withDatabase } from "./teardown.test-support"
 
-// Bun 1.3.12 (the pinned CI runtime) ships no node:sqlite at all, so the module loads lazily and the
-// fixtures that need a real database skip there. Production degrades the same way: setup-import.js
-// reports the database credentials as not imported when the import throws.
+// Older Bun runtimes ship no node:sqlite at all, so the module loads lazily and the fixtures that
+// need a real database skip there. Production degrades the same way: setup-import.js reports the
+// database credentials as not imported when the import throws. The pinned CI runtime is now Bun
+// 1.4.0, which does provide node:sqlite on Windows too, so these fixtures really open database files
+// under the temp root - see teardown.test-support.ts for why teardown has to own those handles.
 const SQLITE_AVAILABLE = await (async () => {
   try {
     await import("node:sqlite")
@@ -36,6 +39,9 @@ const secrets = [
 ]
 
 type Fixture = { root: string; home: string; agentDir: string; xdg: string; launcher: string }
+type DatabaseHandle = { readonly isOpen: boolean }
+
+const databaseHandles: DatabaseHandle[] = []
 
 function write(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true })
@@ -46,19 +52,23 @@ async function database(path: string, version: number, rows: Array<[string, stri
   mkdirSync(dirname(path), { recursive: true })
   const DatabaseSync = await loadDatabaseSync()
   const db = new DatabaseSync(path)
-  db.exec(`
-    CREATE TABLE auth_schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
-    INSERT INTO auth_schema_version VALUES (1, ${version});
-    CREATE TABLE auth_credentials (
-      id INTEGER PRIMARY KEY, provider TEXT NOT NULL, credential_type TEXT NOT NULL,
-      data TEXT NOT NULL, disabled_cause TEXT DEFAULT NULL
-    );
-  `)
-  const insert = db.prepare("INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES (?, ?, ?, ?)")
-  for (const [provider, type, key, disabled] of rows) {
-    insert.run(provider, type, JSON.stringify({ key }), disabled)
-  }
-  db.close()
+  databaseHandles.push(db)
+  // withDatabase closes the handle on every exit path (including a throwing exec/run) and tracks it
+  // for teardown, so no Windows file handle inside the temp root can outlive the fixture.
+  withDatabase(db, (database) => {
+    database.exec(`
+      CREATE TABLE auth_schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+      INSERT INTO auth_schema_version VALUES (1, ${version});
+      CREATE TABLE auth_credentials (
+        id INTEGER PRIMARY KEY, provider TEXT NOT NULL, credential_type TEXT NOT NULL,
+        data TEXT NOT NULL, disabled_cause TEXT DEFAULT NULL
+      );
+    `)
+    const insert = database.prepare("INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES (?, ?, ?, ?)")
+    for (const [provider, type, key, disabled] of rows) {
+      insert.run(provider, type, JSON.stringify({ key }), disabled)
+    }
+  })
 }
 
 function fixture(): Fixture {
@@ -76,13 +86,18 @@ function fixture(): Fixture {
 
 function run(item: Fixture, args: string[], ttyInput?: string) {
   const before = sourceSnapshot(item)
-  const env = {
-    ...process.env, HOME: item.home, SENPI_CODING_AGENT_DIR: item.agentDir,
+  const env: NodeJS.ProcessEnv = {
+    ...process.env, HOME: item.home, USERPROFILE: item.home, SENPI_CODING_AGENT_DIR: item.agentDir,
     XDG_DATA_HOME: item.xdg,
   }
+  delete env.OMO_CODING_AGENT_DIR
+  delete env.PI_CODING_AGENT_DIR
+  // spawnSync only returns after the child exited and was reaped, so teardown never races a live
+  // child; a surfaced spawn error must fail here instead of being read as empty output.
   const result = ttyInput === undefined
     ? spawnSync(process.execPath, [item.launcher, ...args], { encoding: "utf8", env })
     : spawnSync("python3", [TTY_DRIVER, ttyInput, "[y/N]", process.execPath, item.launcher, ...args], { encoding: "utf8", env })
+  if (result.error) throw result.error
   transcripts.push(`${result.stdout}${result.stderr}`)
   expectSourcesUntouched(before)
   return result
@@ -114,11 +129,16 @@ function expectSourcesUntouched(before: ReturnType<typeof sourceSnapshot>): void
 }
 
 afterEach(() => {
-  for (const transcript of transcripts) {
-    for (const secret of secrets) expect(transcript).not.toContain(secret)
+  try {
+    for (const transcript of transcripts) {
+      for (const secret of secrets) expect(transcript).not.toContain(secret)
+    }
+  } finally {
+    // A leaking-secret assertion must not also leak the temp roots for the rest of the run.
+    transcripts.length = 0
+    databaseHandles.length = 0
+    teardownRoots(roots)
   }
-  transcripts.length = 0
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
 describe("omo setup credential inheritance", () => {
@@ -157,8 +177,12 @@ describe("omo setup credential inheritance", () => {
     ])
 
     const result = run(item, ["setup", "--yes"])
+    const output = `${result.stdout}${result.stderr}`
 
     expect(result.status).toBe(0)
+    expect(output).not.toContain("could not inspect agent.db")
+    expect(output).toContain("imported: 2")
+    expect(existsSync(join(item.agentDir, "auth.json"))).toBe(true)
     expect(auth(item)).toEqual({
       google: { type: "api_key", key: secrets[0] },
       openai: { type: "api_key", key: secrets[1] },
@@ -169,6 +193,7 @@ describe("omo setup credential inheritance", () => {
     expect(unknownResult.status).toBe(0)
     expect(unknownResult.stdout).toContain("auth schema version 99 is unknown")
     expect(existsSync(join(unknown.agentDir, "auth.json"))).toBe(false)
+    expect(databaseHandles.map((database) => database.isOpen)).toEqual([false, false, false])
   })
 
   test("#given an existing senpi provider #when other keys import #then its entry stays structurally byte-identical", () => {

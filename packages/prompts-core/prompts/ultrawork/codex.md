@@ -66,7 +66,13 @@ exercises the surface; capture the artifact.
      if Chrome is not available, download and use agent-browser
      (https://github.com/vercel-labs/agent-browser). Capture action
      log + screenshot path. Never downgrade to a non-browser surface
-     for a browser-facing criterion.
+     for a browser-facing criterion. NEVER clear cookies, cache, or
+     site data (`Network.clearBrowserCookies`, `Storage.clearCookies`,
+     `chrome.browsingData.remove`, "clear browsing data") on the user's
+     real/main browser profile — it wipes their logged-in state. If you
+     need that profile's login state, clone it first (`rsync -a
+     <profile>/ <tmp-clone>/`) and launch Chrome / agent-browser against
+     the clone as the user-data-dir; run any clearing there only.
   4. Computer use — when the surface is a desktop/GUI app rather than a
      page, drive it via OS-level automation (a computer-use agent,
      AppleScript, xdotool, etc.) against the running app; capture
@@ -117,6 +123,8 @@ follow its wave order, parallel grouping, and verification exactly.
 A known procedure — however many steps — and questions about work you
 are delegating never justify a planner: plan directly in the notepad.
 Never spawn `plan` before the discovery wave has returned.
+After first-wave discovery returns, MUST declare TOPOLOGY (task | workflow | team | solo) before planning or dispatch, sized to the ideal end state and the current phase. Under ulw-loop or ulw-execute, preserve its one-worktree and one-workflow-run-per-phase ownership; never create one cross-phase graph. Otherwise, dispatch independent branches in parallel before serial work — inline serial is a defect.
+LIGHT != solo — launching payload does not make this session LIGHT->solo; control-plane work stays LIGHT even if delegated project is large.
 
 ## 1. Create the goal with binding success criteria
 You MUST register the goal with the `create_goal` tool — NOT prose,
@@ -223,8 +231,8 @@ and utility functions to batch commands and reduce output. Keep direct calls
 when one result chooses the next action, outputs are already small, semantic
 judgment is required between calls, approval or side effects are involved,
 or native artifacts / citations must be preserved.
-- Architecture / flow / blast radius → `codegraph_explore` first when
-  `codegraph_*` exists; if unavailable, continue with repo tools and LSP.
+- Architecture / flow / blast radius → explore agents plus LSP references
+  and impact; do not guess from conventions.
 - **SYMBOLS REQUIRE LSP** — definitions, references, rename impact,
   workspace symbols, and diagnostics use the available `lsp_*` tools, not
   text search. Run diagnostics after edits and treat errors as blocking.

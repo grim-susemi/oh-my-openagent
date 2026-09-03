@@ -36,7 +36,7 @@ Ask @explore for the policy on this feature
 
 | Agent             | Restrictions                                                                            |
 | ----------------- | --------------------------------------------------------------------------------------- |
-| oracle            | Read-only: cannot write, edit, or delegate (blocked: write, edit, task, call_omo_agent) |
+| oracle            | Read-only: cannot write or edit (blocked: write, edit, apply_patch, task); call_omo_agent is allowed for research delegation |
 | librarian         | Cannot write, edit, or delegate (blocked: write, edit, task, call_omo_agent)            |
 | explore           | Cannot write, edit, or delegate (blocked: write, edit, task, call_omo_agent)            |
 | multimodal-looker | Allowlist: `read` only                                                                  |
@@ -139,7 +139,7 @@ See the **[Team Mode Guide](../guide/team-mode.md)** for configuration, team spe
 - **Feature modules**: `packages/omo-opencode/src/features/` has 23 modules.
 - **Tool system**: `packages/omo-opencode/src/tools/` has 14 tool-producing directories plus a shared helper directory. The registry exposes **12 to 38 tools** depending on config gates. The 8 LSP aliases are served by the built-in `lsp` MCP, not by the tool registry.
 - **Hook system**: the 5-tier composers define **58 slots** (Session 24 + Tool Guard 18 + Transform 7 + Continuation 7 + Skill 2). Default config activates about 50-51; the maximum is 62 when the 4 direct Team Mode event handlers are included.
-- **MCP system**: 3 tiers: built-in MCPs with 3 remote servers (`websearch`, `context7`, `grep_app`) plus local stdio `lsp` and `codegraph`, `.mcp.json` loader, and skill-embedded MCP from `SKILL.md` frontmatter. `codegraph` can be disabled with `codegraph.enabled: false`.
+- **MCP system**: 3 tiers: built-in MCPs with 3 remote servers (`websearch`, `context7`, `grep_app`) plus local stdio `lsp`, `.mcp.json` loader, and skill-embedded MCP from `SKILL.md` frontmatter.
 - **Managers and controllers**: startup creates TmuxSessionManager, BackgroundManager, SkillMcpManager, ConfigHandler, and ModelFallbackControllerAccessor fields, plus optional TuiStateMirror and MonitorManager fields.
 - **Config pipeline**: 6 phases in order: provider, plugin-components, agents, tools, MCPs, commands.
 - **Canonical core agent order**: Sisyphus, Hephaestus, Prometheus, Atlas.
@@ -207,7 +207,7 @@ You can define custom categories in the `[opencode]` block of the unified config
 | `max_prompt_tokens` | number  | Maximum prompt tokens for delegated tasks                                   |
 | `is_unstable_agent` | boolean | Mark agent as unstable - forces background mode for monitoring              |
 | `disable`           | boolean | Disable this category and exclude it from task delegation                   |
-| `warn_unavailable`  | boolean | Suppress or emit unavailable-chain warnings for this category               |
+| `warn_unavailable`  | boolean | Suppress or emit unavailable-chain notices for this category               |
 
 #### Example Configuration
 
@@ -333,11 +333,11 @@ Commands are slash-triggered workflows that execute predefined templates.
 | -------------------- | ------------------------------------------------------------------------------------------ |
 | `/goal`              | Set, show, pause, resume, or clear the active thread goal                                  |
 | `/refactor`          | Intelligent refactoring with LSP, AST-grep, architecture analysis, and TDD verification    |
-| `/start-work`        | Start Atlas work session from Prometheus plan                                              |
+| `/ulw-execute`        | Start Atlas work session from Prometheus plan                                              |
 | `/stop-continuation` | Stop all continuation mechanisms (todo continuation, Goal, boulder) for this session       |
 | `/remove-ai-slops`   | Remove AI-generated code smells from branch changes and review the result                   |
 | `/handoff`           | Create a detailed context summary for continuing work in a new session                     |
-| `/hyperplan`         | Run adversarial multi-agent planning through Team Mode                                      |
+| `/hyperplan`         | Load the `hyperplan` skill and run an adversarial `team_create` planning workflow (requires `team_mode.enabled: true`)      |
 
 ### /goal
 
@@ -356,7 +356,7 @@ Commands are slash-triggered workflows that execute predefined templates.
 **Behavior**:
 
 - The goal persists for the session and is shown in the TUI.
-- While a goal is active, every `session.idle` re-injects a continuation prompt that tracks `tokensUsed` and `timeUsedSeconds`.
+- While a goal is active, every `session.idle` re-injects a continuation prompt that includes the stored `tokensUsed` and `timeUsedSeconds` fields (currently unused; they remain 0).
 - The agent calls `update_goal({ status: "complete" })` only after a completion audit confirms the objective is achieved.
 - `pause` stops idle continuations without clearing the goal; `clear` removes it. `session.deleted` also clears the goal.
 - Goal state is stored in `.omo/goal/<sessionID>.json`.
@@ -380,8 +380,8 @@ Commands are slash-triggered workflows that execute predefined templates.
 ```
 
 - `enabled` (default `false`) gates the Goal subsystem and its tools.
-- `auto_start` (default `false`) allows a goal to be auto-created from the first main-session message when `default_mode.goal` is true.
-- `default_max_iterations` (1-1000, default `100`) is the continuation iteration cap, preserved for Ralph Loop behavioral parity.
+- `auto_start` (default `false`) is accepted in config but not wired; first-message auto-create is intended to follow `default_mode.goal`, and that path is currently inert.
+- `default_max_iterations` (1-1000, default `100`) is retained on the `goal` schema for Ralph Loop config migration; the Goal hook doesn't enforce an iteration cap.
 
 **Migration**: the legacy top-level `ralph_loop` config auto-migrates to `goal` at load time and logs a deprecation warning; explicit `goal` config wins over migrated values. `default_mode.ralph_loop` was renamed to `default_mode.goal`.
 
@@ -407,19 +407,19 @@ The `/ulw-loop` slash command has been removed; continuous goal pursuit is now h
 - TDD verification after changes
 - Codemap generation
 
-### /start-work
+### /ulw-execute
 
 **Purpose**: Start execution from a Prometheus-generated plan
 
 **Usage**:
 
 ```
-/start-work [plan-name] [--worktree <path>] [--make-pr] [--ship]
+/ulw-execute [plan-name] [--worktree <path>] [--make-pr] [--ship]
 ```
 
-Uses atlas agent to execute planned tasks systematically.
+Switches the session to Atlas (Sisyphus if Atlas is unregistered), injects Prometheus plan + boulder + worktree/PR context, then Atlas executes. First actions are `create_goal` and todo registration, not immediate coding.
 
-- `--worktree <path>`: work inside a task-owned git worktree.
+- `--worktree <path>`: use this git worktree (create it if needed). Omit it to work in the current repo.
 - `--make-pr`: deliver the work as a pull request; implies worktree mode (a task-owned worktree is created when `--worktree` is omitted) and hands off with the PR URL.
 - `--ship`: implies `--make-pr`, then keeps working until the PR passes CI/review gates and is merged, before cleaning up the worktree.
 
@@ -439,10 +439,10 @@ Generates a structured handoff document capturing the current state, what was do
 
 Load custom commands from:
 
-- `.opencode/command/*.md` (project, OpenCode native)
-- `~/.config/opencode/command/*.md` (user, OpenCode native)
+- `.opencode/commands/*.md` and `.opencode/command/*.md` (project, OpenCode native)
+- `~/.config/opencode/commands/*.md` and `~/.config/opencode/command/*.md` (user, OpenCode native)
 - `.claude/commands/*.md` (project, Claude Code compat)
-- `~/.config/opencode/commands/*.md` (user, Claude Code compat)
+- `~/.claude/commands/*.md` (user, Claude Code compat)
 
 ## Skill Sets
 
@@ -465,7 +465,7 @@ The built-in skill registry contains `agent-browser`, `debugging`, `dev-browser`
 | **frontend**           | UI/UX tasks, styling                                    | Designer-turned-developer persona. Crafts strong UI/UX even without design mockups. Emphasizes bold aesthetic direction, distinctive typography, cohesive color palettes.                                                                                                                                                                     |
 | **review-work**        | "review work", "review my work", "QA my work"          | Post-implementation review orchestrator. Launches 5 parallel background sub-agents for comprehensive review: goal verification, code quality, security, hands-on QA, and context mining. All must pass for review to pass.                                                                                                                     |
 | **ulw-research**       | `ulw-research`, deep research requests | Maximum-saturation research. Runs parallel explore/librarian swarms across code, docs, web, and OSS repos; recursively follows `EXPAND` leads until convergence; proves contested claims by running code; and returns cited synthesis. Epistemic instrumentation covers intent-vs-reality diffing, claim graph, observation manifest, independent-observation convergence, temporal evidence, verification economics, and cause-disappearance records. |
-| **$omo:remove-ai-slops** | "remove AI slop", "de-AI", "humanize"                 | Removes AI-generated code smells from files while preserving functionality. Identifies and eliminates verbose comments, redundant error handling, over-engineered patterns, and generic AI phrasing.                                                                                                                                           |
+| **remove-ai-slops** | "remove AI slop", "de-AI", "humanize"                 | Removes AI-generated code smells from files while preserving functionality. Invoke as `skill(name="remove-ai-slops")`. Identifies and eliminates verbose comments, redundant error handling, over-engineered patterns, and generic AI phrasing.                                                                                                                                           |
 
 `ulw-research` is intentionally explicit. Ordinary questions and normal implementation context-gathering will not trigger a saturation swarm. Use `ulw-research` when the research itself is the deliverable and every claim needs a citation, a proof artifact, or an execution-backed verdict.
 
@@ -647,7 +647,7 @@ Tool registration is config-gated. The registry exposes **12 to 38 tools**.
 
 | Tool     | Description                                                                                                                                                |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **edit** | Hash-anchored edit tool. Uses `LINE#ID` format for precise, safe modifications. Validates content hashes before applying changes and rejects stale hash edits. |
+| **edit** | Hash-anchored edit tool (`LINE#ID`), registered only when `hashline_edit: true` (default false). Validates content hashes before applying changes and rejects stale hash edits. |
 
 Hashline IDs use characters from `ZPMQVRWSNKTXJBYH`.
 
@@ -679,6 +679,14 @@ AST-aware search and rewrite now lives in the `ast-grep` skill. Load it with the
 | **background_output** | Retrieve background task results                                                                                                                                                                                                        |
 | **background_cancel** | Cancel running background tasks                                                                                                                                                                                                         |
 
+`task` is the broader delegation path for category routing, direct
+`subagent_type` calls, skills, and sync/background execution.
+`call_omo_agent` is the narrow compatibility path for the small
+explore/librarian-style agent allowlist. Keep the split in mind when
+configuring permissions: Sisyphus-Junior blocks `task` to avoid nested
+delegation loops, but can still use `call_omo_agent` where that narrower
+path is explicitly allowed.
+
 ### Visual Analysis Tools
 
 | Tool        | Description                                                                                                                                                    |
@@ -696,7 +704,7 @@ AST-aware search and rewrite now lives in the `ast-grep` skill. Load it with the
 
 | Tool               | Description                              |
 | ------------------ | ---------------------------------------- |
-| **session_list**   | List all OpenCode sessions               |
+| **session_list**   | List OpenCode sessions for a project (defaults to the current working directory); optional date and limit filters |
 | **session_read**   | Read messages and history from a session |
 | **session_search** | Full-text search across session messages |
 | **session_info**   | Get session metadata and statistics      |
@@ -858,8 +866,8 @@ Current composition counts:
 
 | Hook                            | Event                    | Description                                                                                                                                                                                               |
 | ------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **directory-agents-injector**   | PreToolUse + PostToolUse | Auto-injects AGENTS.md when reading files. Walks from file to project root, collecting all AGENTS.md files. Deprecated for OpenCode 1.1.37+ — Auto-disabled when native AGENTS.md injection is available. |
-| **directory-readme-injector**   | PreToolUse + PostToolUse | Auto-injects README.md for directory context.                                                                                                                                                             |
+| **directory-agents-injector**   | PostToolUse + Event | Auto-injects AGENTS.md after Read. Walks from file to project root, collecting all AGENTS.md files. Auto-disabled on OpenCode 1.1.37+ when native AGENTS.md injection is available. |
+| **directory-readme-injector**   | PostToolUse + Event | Auto-injects README.md after Read for directory context.                                                                                                                                                  |
 | **rules-injector**              | PreToolUse + PostToolUse | Injects rules from `.claude/rules/` when conditions match. Supports globs and alwaysApply.                                                                                                                |
 | **compaction-context-injector** | Event                    | Preserves critical context during session compaction.                                                                                                                                                     |
 | **preemptive-compaction**       | Event                    | Proactively compacts sessions before hitting token limits.                                                                                                                                                |
@@ -868,11 +876,11 @@ Current composition counts:
 
 | Hook                        | Event               | Description                                                                                                                                                 |
 | --------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **keyword-detector**        | Message + Transform | IntentGate detector. Activates `ultrawork`/`ulw`, `search`, `analyze`, and `team` modes from message keywords. |
-| **think-mode**              | Params              | Auto-detects extended thinking needs. Catches "think deeply", "ultrathink" and adjusts model settings.                                                      |
+| **keyword-detector**        | Message             | IntentGate detector. Activates `ultrawork`/`ulw`, `team`, `hyperplan`, and `hyperplan-ultrawork` from message keywords. |
+| **think-mode**              | Message             | On "think"/"ultrathink" in the user message, sets the message variant to `high` unless already a high variant.                                              |
 | **goal**                    | Event               | Re-injects a goal continuation prompt on session.idle while a goal is active; clears the goal on session.deleted.                                           |
-| **start-work**              | Message             | Handles /start-work command execution.                                                                                                                      |
-| **auto-slash-command**      | Message             | Automatically executes slash commands from prompts.                                                                                                         |
+| **ulw-execute**              | Message + command.execute.before | After /ulw-execute is expanded, selects a Prometheus plan, initializes boulder state, scaffolds notepads, switches the session to Atlas, and injects plan context. |
+| **auto-slash-command**      | Message + command.execute.before | Expands detected slash commands into their command templates in the prompt.                                                                    |
 | **stop-continuation-guard** | Event + Message     | Guards the stop-continuation mechanism.                                                                                                                     |
 | **category-skill-reminder** | PostToolUse + Message Transform + Event | Reminds agents about available category skills for delegation.                                                                                              |
 
@@ -882,7 +890,7 @@ Current composition counts:
 | ------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
 | **comment-checker**             | PostToolUse              | Runs `@code-yeongyu/comment-checker` to block AI-slop comment patterns. Bypass options: `// @allow` for a line, `// comment-checker-disable-file` at file top. |
 | **tool-pair-validator**         | Message Transform        | Validates tool call/result pairs during chat message transformation.                       |
-| **edit-error-recovery**         | PostToolUse + Event      | Recovers from edit tool failures.                                                         |
+| **edit-error-recovery**         | PostToolUse              | Recovers from edit tool failures.                                                         |
 | **write-existing-file-guard**   | PreToolUse               | Prevents accidental overwrites of existing files without reading them first.              |
 | **hashline-read-enhancer**      | PostToolUse              | Enhances read output with hash-anchored line markers for the hashline edit tool.          |
 
@@ -892,14 +900,14 @@ Current composition counts:
 | ------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **anthropic-context-window-limit-recovery** | Event           | Handles Claude context window limits gracefully.                                                                                                                                                                                                            |
 | **runtime-fallback**                        | Event + Message | Automatically switches to backup models on retryable API errors (e.g., 429, 500, 502, 503, 504), provider key misconfiguration errors (e.g., missing API key), and provider retry signals. `message.updated` retry-signal detection requires `timeout_seconds > 0`; structured `session.status` retry events can still trigger fallback. |
-| **model-fallback**                          | Event + Message | Manages model fallback chain when primary model is unavailable.                                                                                                                                                                                             |
+| **model-fallback**                          | Message         | Applies the pending model-fallback chain to the next chat.message when a fallback is queued.                                                                                                                                                                                             |
 | **json-error-recovery**                     | PostToolUse     | Recovers from JSON parse errors in tool outputs.                                                                                                                                                                                                            |
 
 #### Truncation & Context Management
 
 | Hook                      | Event       | Description                                                                                         |
 | ------------------------- | ----------- | --------------------------------------------------------------------------------------------------- |
-| **tool-output-truncator** | PostToolUse | Truncates output from Grep, Glob, LSP, AST-grep tools. Dynamically adjusts based on context window. |
+| **tool-output-truncator** | PostToolUse | Truncates output from grep, glob, lsp_diagnostics, interactive_bash, skill_mcp, and webfetch. Dynamically adjusts based on context window. |
 
 #### Notifications & UX
 
@@ -907,7 +915,7 @@ Current composition counts:
 | ---------------------------- | ------------------- | -------------------------------------------------------------------------------------------------- |
 | **auto-update-checker**      | Event               | Checks for new versions on session creation, shows startup toast with version and Sisyphus status. |
 | **background-notification**  | Event               | Notifies when background agent tasks complete.                                                     |
-| **session-notification**     | Event               | OS notifications when agents go idle. Works on macOS, Linux, Windows.                              |
+| **session-notification**     | Event               | OS notifications when agents go idle. Works on macOS, Linux, Windows. Use one notification path with OpenCode native Attention to avoid duplicates. |
 | **agent-usage-reminder**     | PostToolUse + Event | Reminds you to leverage specialized agents for better results.                                     |
 | **question-label-truncator** | PreToolUse          | Truncates long question labels in the Question tool UI.                                            |
 
@@ -916,7 +924,7 @@ Current composition counts:
 | Hook                             | Event               | Description                                         |
 | -------------------------------- | ------------------- | --------------------------------------------------- |
 | **task-resume-info**             | PostToolUse         | Provides task resume information for continuity.    |
-| **delegate-task-retry**          | PostToolUse + Event | Retries failed task delegation calls.               |
+| **delegate-task-retry**          | PostToolUse         | Retries failed task delegation calls.               |
 | **empty-task-response-detector** | PostToolUse         | Detects empty responses from delegated tasks.       |
 | **tasks-todowrite-disabler**     | PreToolUse          | Disables TodoWrite tool when task system is active. |
 
@@ -941,7 +949,7 @@ Current composition counts:
 
 | Hook                        | Event      | Description                                                |
 | --------------------------- | ---------- | ---------------------------------------------------------- |
-| **prometheus-md-only**      | PreToolUse | Enforces markdown-only output for Prometheus planner.      |
+| **prometheus-md-only**      | PreToolUse | Restricts Prometheus write/edit tools to `.omo/*.md` plan files.      |
 | **no-sisyphus-gpt**         | Message    | Prevents Sisyphus from running on incompatible GPT models. |
 | **no-hephaestus-non-gpt**   | Message    | Prevents Hephaestus from running on non-GPT models.        |
 | **sisyphus-junior-notepad** | PreToolUse | Manages notepad state for Sisyphus-Junior agents.          |
@@ -1009,7 +1017,7 @@ The three tiers of MCP servers and where they come from:
 
 | Tier | Source | Visible in `opencode mcp list`? |
 | ---- | ------ | ------------------------------- |
-| 1 — Built-in | Injected at runtime by oh-my-openagent (`websearch`, `context7`, `grep_app`, `lsp`, `codegraph`) | No |
+| 1 — Built-in | Injected at runtime by oh-my-openagent (`websearch`, `context7`, `grep_app`, `lsp`) | No |
 | 2 — Claude Code `.mcp.json` | Loaded from `.mcp.json` files and merged in by oh-my-openagent at runtime | No |
 | 3 — Skill-embedded | Declared in `SKILL.md` frontmatter, spun up on demand per session | No |
 | — Native OpenCode | Configured directly in `opencode.json` under the `mcp` key, without the plugin | Yes |
@@ -1030,7 +1038,6 @@ The three tiers of MCP servers and where they come from:
 | **context7**  | Official documentation lookup for any library/framework                                       |
 | **grep_app**  | Ultra-fast code search across public GitHub repos. Great for finding implementation examples. |
 | **lsp**       | Local LSP tools for diagnostics, symbols, references, and renames                             |
-| **codegraph** | Local code graph stdio server; enabled unless `codegraph.enabled` is `false`                  |
 
 ### Skill-Embedded MCPs
 
@@ -1159,7 +1166,7 @@ Full compatibility layer for Claude Code configurations.
 
 | Type         | Locations                                                                          |
 | ------------ | ---------------------------------------------------------------------------------- |
-| **Commands** | `~/.config/opencode/commands/`, `.claude/commands/`                                |
+| **Commands** | OpenCode: `~/.config/opencode/command(s)/`, `.opencode/command(s)/`. Claude: `~/.claude/commands/`, `.claude/commands/` (gated by `claude_code.commands`) |
 | **Skills**   | `~/.config/opencode/skills/*/SKILL.md`, `.claude/skills/*/SKILL.md`                |
 | **Agents**   | `~/.config/opencode/agents/*.md`, `.claude/agents/*.md`                            |
 | **MCPs**     | `~/.claude.json`, `~/.config/opencode/.mcp.json`, `.mcp.json`, `.claude/.mcp.json` |

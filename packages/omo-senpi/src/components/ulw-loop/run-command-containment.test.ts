@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import { FakeExtensionAPI } from "../../../test-support/fake-extension-api"
 import { createUlwLoopComponent } from "./index"
-import { createLogger } from "./ulw-loop.test-support"
+import { createLogger, sessionEventCtx } from "./ulw-loop.test-support"
 
 describe("omo-senpi ulw-loop run-command failure containment", () => {
   it("#given runCommand rejects synchronously with EINVAL #when input dispatches #then the handler resolves continue and never rejects", async () => {
@@ -11,6 +11,7 @@ describe("omo-senpi ulw-loop run-command failure containment", () => {
     const logger = createLogger()
     await createUlwLoopComponent({
       resolveOmoBin: () => "/tmp/omo",
+      planExists: () => true,
       runCommand: () => {
         throw einval
       },
@@ -19,7 +20,7 @@ describe("omo-senpi ulw-loop run-command failure containment", () => {
     const results = await pi.dispatch(
       "input",
       { type: "input", text: "continue", source: "interactive", streamingBehavior: "steer" },
-      { cwd: "/repo" },
+      sessionEventCtx("/repo"),
     )
 
     expect(results).toEqual([{ action: "continue" }])
@@ -35,10 +36,11 @@ describe("omo-senpi ulw-loop run-command failure containment", () => {
     const logger = createLogger()
     await createUlwLoopComponent({
       resolveOmoBin: () => "/tmp/omo",
+      planExists: () => true,
       runCommand: async () => ({ code: 127, stdout: "" }),
     }).register(pi, { logger, config: { getFlag: () => false } })
 
-    const results = await pi.dispatch("agent_end", { type: "agent_end" }, { cwd: "/repo" })
+    const results = await pi.dispatch("agent_end", { type: "agent_end" }, sessionEventCtx("/repo"))
 
     expect(results).toEqual([undefined])
     expect(pi.userMessages).toEqual([])
@@ -49,17 +51,72 @@ describe("omo-senpi ulw-loop run-command failure containment", () => {
     const logger = createLogger()
     await createUlwLoopComponent({
       resolveOmoBin: () => "/tmp/omo",
+      planExists: () => true,
       runCommand: () => Promise.reject(new Error("spawn EINVAL")),
     }).register(pi, { logger, config: { getFlag: () => false } })
 
     const results = await pi.dispatch(
       "input",
       { type: "input", text: "continue", source: "interactive", streamingBehavior: "steer" },
-      { cwd: "/repo" },
+      sessionEventCtx("/repo"),
     )
 
     expect(results).toEqual([{ action: "continue" }])
     // activeStatus would have injected a transform; the runCommand rejection must suppress it.
     expect(results[0]).not.toHaveProperty("text")
+  })
+
+  it("#given runCommand exits 1 with ULW_LOOP_PLAN_MISSING stdout #when input dispatches #then no warn entry is recorded", async () => {
+    const pi = new FakeExtensionAPI()
+    const logger = createLogger()
+    await createUlwLoopComponent({
+      resolveOmoBin: () => "/tmp/omo",
+      planExists: () => true,
+      runCommand: async () => ({
+        code: 1,
+        stdout: JSON.stringify({
+          ok: false,
+          error: { code: "ULW_LOOP_PLAN_MISSING", message: "plan not found" },
+        }),
+      }),
+    }).register(pi, { logger, config: { getFlag: () => false } })
+
+    const results = await pi.dispatch(
+      "input",
+      { type: "input", text: "continue", source: "interactive", streamingBehavior: "steer" },
+      sessionEventCtx("/repo"),
+    )
+
+    expect(results).toEqual([{ action: "continue" }])
+    expect(logger.entries.filter((entry) => entry.level === "warn")).toEqual([])
+  })
+
+  it("#given runCommand exits 1 with ULW_LOOP_PLAN_INVALID stdout #when input dispatches #then warn carries errorCode", async () => {
+    const pi = new FakeExtensionAPI()
+    const logger = createLogger()
+    await createUlwLoopComponent({
+      resolveOmoBin: () => "/tmp/omo",
+      planExists: () => true,
+      runCommand: async () => ({
+        code: 1,
+        stdout: JSON.stringify({
+          ok: false,
+          error: { code: "ULW_LOOP_PLAN_INVALID", message: "invalid plan" },
+        }),
+      }),
+    }).register(pi, { logger, config: { getFlag: () => false } })
+
+    const results = await pi.dispatch(
+      "input",
+      { type: "input", text: "continue", source: "interactive", streamingBehavior: "steer" },
+      sessionEventCtx("/repo"),
+    )
+
+    expect(results).toEqual([{ action: "continue" }])
+    expect(logger.entries).toContainEqual({
+      level: "warn",
+      message: "omo-senpi ulw-loop status ignored",
+      details: { reason: "non-zero-exit", code: 1, errorCode: "ULW_LOOP_PLAN_INVALID" },
+    })
   })
 })

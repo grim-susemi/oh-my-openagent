@@ -59,6 +59,7 @@ describe("Senpi compatibility test script", () => {
       "node packages/omo-senpi/plugin/scripts/stage-lsp-daemon-runtime.mjs",
       "node packages/omo-senpi/plugin/scripts/stage-ast-grep-mcp-runtime.mjs",
       "node packages/omo-senpi/plugin/scripts/stage-agent-toolkit.mjs",
+      "node packages/omo-senpi/plugin/scripts/stage-x-search-skill.mjs",
       "node packages/omo-senpi/plugin/scripts/build-extension.mjs",
       "node packages/omo-senpi/plugin/scripts/sync-skills.mjs",
       "node packages/omo-senpi/plugin/scripts/embed-directive.mjs --check",
@@ -103,7 +104,7 @@ describe("Senpi compatibility test script", () => {
         "refactor",
         "remove-ai-slops",
         "review-work",
-        "start-work",
+        "ulw-execute",
         "ultimate-browsing",
         "ultrawork",
         "ulw-loop",
@@ -122,6 +123,7 @@ describe("Senpi compatibility test script", () => {
       await writeFile(join(pluginRoot, "extensions", "reflection-persona.md"), "# reflection persona fixture\n")
       await writeFile(join(pluginRoot, "extensions", "dream-persona.md"), "# dream persona fixture\n")
       await writeFile(join(pluginRoot, "extensions", "facts-persona.md"), "# facts persona fixture\n")
+      await writeFile(join(pluginRoot, "extensions", "memorian-persona.md"), "# memorian persona fixture\n")
       // The memory run supervisor ships as its own executable artifact beside the bundle, so a
       // packed root without it is genuinely incomplete and the installer is right to reject it.
       await writeFile(join(pluginRoot, "extensions", "memory-run-supervisor.mjs"), "#!/usr/bin/env node\n")
@@ -213,7 +215,7 @@ describe("Senpi compatibility test script", () => {
     // #then
     expect(senpiJob).toContain("os: [ubuntu-latest, macos-latest, windows-latest]")
     expect(senpiJob).toContain('node-version: "24"')
-    expect(senpiJob).toContain('bun-version: "1.3.14"')
+    expect(senpiJob).toContain('bun-version: "1.4.0"')
     expect(senpiJob).toContain("bun run build:senpi-plugin")
     expect(senpiJob).toContain("npm pack --pack-destination")
     expect(senpiJob).toContain("npm --prefix packages/lsp-daemon test -- test/daemon-roundtrip.test.ts")
